@@ -11,12 +11,10 @@ st.set_page_config(page_title="CRM Custom Operations", layout="wide")
 # ==========================================
 # 1. CONFIGURACIÓN DE ENLACES
 # ==========================================
-# Reemplaza con las URLs reales de tus 3 Google Sheets
 URL_OPERACION = "https://docs.google.com/spreadsheets/d/16mbhnSOg75H_WcSsWPblLpcslnu7v4VYEaQlyBLnR8A/edit"
 URL_CALIDAD = "https://docs.google.com/spreadsheets/d/1ij82h2c7WpO7-2LvNwuwLGexpp080wNkIKUH8IJY6KE/edit"
 URL_REGISTROS = "https://docs.google.com/spreadsheets/d/1peujLDzEu9tEyWFrEiZfGb9d_SrgmJ5gTb0bTYmCG6U/edit"
 
-# Reemplaza con la ID de la carpeta raíz de SOPs en Google Drive
 SOP_FOLDER_ID = "1VzG0XA2pxxGzxfUiCcabwm6nBZjRhtdY"
 
 # ==========================================
@@ -24,25 +22,85 @@ SOP_FOLDER_ID = "1VzG0XA2pxxGzxfUiCcabwm6nBZjRhtdY"
 # ==========================================
 @st.cache_resource
 def obtener_cliente_oauth():
-    # Detecta si se está ejecutando en Streamlit Cloud con Secrets
-    if "authorized_user" in st.secrets:
-        secret_data = st.secrets["authorized_user"]
-        user_info = json.loads(secret_data) if isinstance(secret_data, str) else dict(secret_data)
-        creds = Credentials.from_authorized_user_info(user_info)
-        return gspread.authorize(creds)
-    
-    # Si se ejecuta en tu computadora local
-    return gspread.oauth(
-        credentials_filename='oauth_credentials.json',
-        authorized_user_filename='authorized_user.json'
-    )
+    creds = None
+    # 1. Intentar cargar credenciales desde Streamlit Cloud Secrets
+    try:
+        if "authorized_user" in st.secrets:
+            user_info = dict(st.secrets["authorized_user"])
+            creds = Credentials.from_authorized_user_info(user_info)
+    except Exception:
+        # Si se ejecuta localmente y no existe secrets.toml, se ignora el error
+        pass
+
+    # 2. Si no hay Secrets, ejecutar autenticación local mediante navegador
+    if not creds:
+        gc = gspread.oauth(
+            credentials_filename='oauth_credentials.json',
+            authorized_user_filename='authorized_user.json'
+        )
+        creds = gc.auth
+        return gc, creds
+    else:
+        gc = gspread.authorize(creds)
+        return gc, creds
 
 try:
-    gc = obtener_cliente_oauth()
-    creds = gc.auth
+    gc, creds = obtener_cliente_oauth()
 except Exception as e:
     st.error(f"Error en la autenticación OAuth: {e}")
     st.stop()
+
+# Servicios de Google Drive y Docs para el Módulo 6
+@st.cache_resource
+def obtener_servicios_google(_creds):
+    drive_service = build('drive', 'v3', credentials=_creds)
+    docs_service = build('docs', 'v1', credentials=_creds)
+    return drive_service, docs_service
+
+drive_service, docs_service = obtener_servicios_google(creds)
+
+# ==========================================
+# FUNCIONES AUXILIARES PARA GOOGLE DRIVE / DOCS
+# ==========================================
+def escanear_sops_por_categoria(folder_id):
+    try:
+        query_folders = f"'{folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        results_folders = drive_service.files().list(q=query_folders, fields="files(id, name)").execute()
+        carpetas = results_folders.get('files', [])
+
+        sops_tree = {}
+        for folder in carpetas:
+            cat_name = folder['name']
+            cat_id = folder['id']
+            query_docs = f"'{cat_id}' in parents and trashed = false"
+            results_docs = drive_service.files().list(q=query_docs, fields="files(id, name)").execute()
+            docs = results_docs.get('files', [])
+            sops_tree[cat_name] = {doc['name']: doc['id'] for doc in docs}
+
+        if not sops_tree:
+            query_root_docs = f"'{folder_id}' in parents and trashed = false"
+            results_root = drive_service.files().list(q=query_root_docs, fields="files(id, name)").execute()
+            root_docs = results_root.get('files', [])
+            if root_docs:
+                sops_tree["General SOPs"] = {doc['name']: doc['id'] for doc in root_docs}
+
+        return sops_tree
+    except Exception as e:
+        st.error(f"Error al acceder a Google Drive: {e}")
+        return {}
+
+def leer_google_doc(doc_id):
+    try:
+        doc = docs_service.documents().get(documentId=doc_id).execute()
+        texto = ""
+        for value in doc.get('body', {}).get('content', []):
+            if 'paragraph' in value:
+                elements = value.get('paragraph', {}).get('elements', [])
+                for elem in elements:
+                    texto += elem.get('textRun', {}).get('content', '')
+        return texto if texto else "El documento está vacío."
+    except Exception as e:
+        return f"No se pudo extraer el texto del documento ({e}). Verifica que sea un archivo Google Docs válido."
 
 # ==========================================
 # 3. NAVEGACIÓN Y MENÚ LATERAL
