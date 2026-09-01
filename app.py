@@ -19,61 +19,29 @@ URL_REGISTROS = "https://docs.google.com/spreadsheets/d/1peujLDzEu9tEyWFrEiZfGb9
 SOP_FOLDER_ID = "1VzG0XA2pxxGzxfUiCcabwm6nBZjRhtdY"
 
 # ==========================================
-# 2. CONEXIÓN OAUTH 2.0 (@didi-labs.com)
+# 2. CONEXIÓN OAUTH 2.0 (LOCAL Y NUBE)
 # ==========================================
 @st.cache_resource
 def obtener_cliente_oauth():
-    # gspread gestiona la autenticación de usuario mediante navegador
-    gc = gspread.oauth(
+    # Detecta si se está ejecutando en Streamlit Cloud con Secrets
+    if "authorized_user" in st.secrets:
+        secret_data = st.secrets["authorized_user"]
+        user_info = json.loads(secret_data) if isinstance(secret_data, str) else dict(secret_data)
+        creds = Credentials.from_authorized_user_info(user_info)
+        return gspread.authorize(creds)
+    
+    # Si se ejecuta en tu computadora local
+    return gspread.oauth(
         credentials_filename='oauth_credentials.json',
         authorized_user_filename='authorized_user.json'
     )
-    return gc
 
 try:
     gc = obtener_cliente_oauth()
-    # Extraer credenciales para Google Docs y Drive API
     creds = gc.auth
 except Exception as e:
-    st.error(f"Error en la autenticación OAuth. Asegúrate de tener 'oauth_credentials.json' en la carpeta: {e}")
+    st.error(f"Error en la autenticación OAuth: {e}")
     st.stop()
-
-def leer_google_doc(doc_id):
-    try:
-        service = build('docs', 'v1', credentials=creds)
-        document = service.documents().get(documentId=doc_id).execute()
-        texto = ""
-        for elemento in document.get('body').get('content'):
-            if 'paragraph' in elemento:
-                for elem in elemento.get('paragraph').get('elements'):
-                    texto += elem.get('textRun', {}).get('content', '')
-        return texto
-    except Exception as e:
-        return f"Error al cargar el SOP desde Google Docs: {e}"
-
-@st.cache_data(ttl=300)
-def escanear_sops_por_categoria(folder_id):
-    try:
-        service = build('drive', 'v3', credentials=creds)
-        q_subfolders = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-        subfolders = service.files().list(q=q_subfolders, fields="files(id, name)").execute().get('files', [])
-        
-        sops_tree = {}
-        if subfolders:
-            for sf in subfolders:
-                cat_name = sf['name']
-                q_docs = f"'{sf['id']}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
-                docs = service.files().list(q=q_docs, fields="files(id, name)").execute().get('files', [])
-                sops_tree[cat_name] = {doc['name']: doc['id'] for doc in docs}
-        else:
-            q_docs = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
-            docs = service.files().list(q=q_docs, fields="files(id, name)").execute().get('files', [])
-            sops_tree["General"] = {doc['name']: doc['id'] for doc in docs}
-            
-        return sops_tree
-    except Exception as e:
-        st.error(f"Error al escanear la carpeta de SOPs en Drive: {e}")
-        return {}
 
 # ==========================================
 # 3. NAVEGACIÓN Y MENÚ LATERAL
